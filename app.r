@@ -10,7 +10,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       selectInput("langID", "Language", choices = langoptions),
-      radioButtons("dataID", "Data Type",  choices = c("percent", "speakers"), selected = "speakers")),
+      radioButtons("dataID", "Data Type",  choices = c("percent", "speakers"), selected = "speakers"),width = 2),
   
     mainPanel(
                 fluidRow(
