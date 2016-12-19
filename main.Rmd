@@ -1,0 +1,315 @@
+---
+title: "Languages Spoken at Home in the US"
+author: "Subhasree Samanta"
+date: "December 18, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("functions.r")
+source("app.r")
+library(viridis)
+library(gridExtra)
+```
+
+
+### Introduction
+  The world has reached peak levels of globalization and integratedness - and a component of globalization is the movement of people. I wanted to take a look at the movement of people through the demographics of ethnicity/language distributions on a global scale. It was difficult to find actual data to the level of detail I wanted, but I did come across data from the US Census Bureau, from the American Community Survey (ACS). The "Detailed Language Spoken at Home and Ability to Speak English" tables provided an opportunity to visualize the heterogeneity of languages in America. 
+
+### Scraping the data
+
+I decided to use the tables for Languages Spoken at Home for the 2009-2013 and 2006-2008 surveys. The data provided in the files are values based on the survey, with a 90% margin of error. 
+```{r urls}
+##  Detailed Languages Spoken at Home and Ability to Speak English for the Population 5 Years and Over for States: 2009-2013
+url1 <- "http://www2.census.gov/library/data/tables/2008/demo/language-use/2009-2013-acs-lang-tables-state.xls"
+
+## Detailed Languages Spoken at Home and Ability to Speak English for the Population 5 Years and Over for Counties: 2009-2013
+url2 <- "http://www2.census.gov/library/data/tables/2008/demo/language-use/2009-2013-acs-lang-tables-county.xls"
+
+## Detailed Language Spoken at Home and Ability to Speak English for the Population 5 Years and Older by States: 2006-2008
+url3 <- "http://www2.census.gov/library/data/tables/2008/demo/language-use/2006-2008-acs-lang-tables.xls"
+```    
+
+  
+  The survey data was available in XLS files from the US Census Bureau site, so I thought I would make use of read.xls to pull the data from the excel files without saving the file but found that the function can only pull in one sheet of a file. Wanting to utilize the function to read in multiple sheets, I created a modified verison of a function found on Stack Overflow, to make a list of objects containing the sheets. I quickly realized this is a very inefficient method to grab the data, as the excel document is re-downloaded for every sheet. It would be much faster to download the full file once or to use the Census Bureau's API, which I did not realize was an option until much later in the project. 
+  In the interest of time, rather than run the function to capture the data for this R Markdown, I have saved the cleaned data sets along with the original excel files in the included 'data' folder. Below is the original code used to scrape the state data into lists. 
+```{r, scrape_function, eval = FALSE}
+read_excel_allsheets <- function(url, sheets) {
+  x <- lapply(sheets, function(X) 
+    read.xls(url, sheet = X))
+  ##names(x) <- sheets
+  x
+}
+
+states2013_sheets <- read_excel_allsheets(url1, 2:53)
+states2008_sheets <- read_excel_allsheets(url3, 2:53)
+```
+  
+### Cleaning & Functions
+  In order to make dataframes from the list objects, I utilized several functions to 1) make an object a data frame, 2) clean the data frame, and 3) bind it to the full data set. This was done by a for loop for the number of objects in a list. The functions below can also be found in the included 'functions.r' file. Each sheet has data regarding a language, the number of speakers, the margin of error, the number that spoke english less than 'very well', and its margin of error. For this project, I am only interested in using the language and the number of speakers.
+```{r, full_function, eval = FALSE}
+make_full_df <- function(datalist){
+  x = data.frame(matrix("",ncol = 3, nrow = 0))
+  colnames(x) <- c("Langs","speakers","State")
+  num = 1:length(datalist)
+  
+  for(num in 1:length(datalist)){
+    y <- make_df(datalist[num])
+    x <- rbind(x,y)}
+  x
+}
+```
+
+
+For each object in the list, the make_df function makes dataframes of the object while also tidying it and identifying the region for the object. At the beginning of each sheet there is a description, which includes the particular state for that table. Example: (Table 3.  Detailed Languages Spoken at Home and Ability to Speak English for the Population 5 Years and Over for Alabama:  2006-2008). While the 2009-2013 Survey data had an Index in the first sheet, the 2006-2008 data did not and the description had to be used to pull the identifying state. Below I used gsub to pull the string before :, and then the strings after "for" to determine the state name. 
+```{r df_function, eval = FALSE}
+make_df <- function(obj) {
+  y <- as.data.frame(obj)
+  statename <- gsub(":.*$","",y[1,1])
+  statename <- gsub("^.*?for","",statename)
+  statename <- gsub("^.*?for","",statename)
+  y <- clean_df(y) 
+  y <- y %>%
+    mutate(State = as.character(statename))
+  y
+}
+```
+
+
+  The original data had many header rows that needed to be removed. It appeared that many of the header rows contained "language", "incl", "LANGUAGE", and "AND", so these were used as the criteria to remove a row. I also cleaned the language columns of unnecessary periods at this time. This function is used in the clean_df function. 
+```{r rows_function, eval = FALSE}
+## Specific function to remove the header rows from the data, and tidy the language names
+clean_rows <- function(df){
+  df <- df[!grepl("language", df[,1]),]
+  df <- df[!grepl("incl",df[,1]),]
+  df <- df[!grepl("LANGUAGE",df[,1]),]
+  df <- df[!grepl("AND",df[,1]),]
+  df$Langs <- gsub("[.]","",df$Langs)
+  df
+}
+```
+
+  First thing done here is to keep only columns of interest to us, and remove the first two rows which we know are table descriptions. There are some non-numeric entries of (B) and (X) in our columns of interest, which indicate either no sample observations, too few, question did not apply. For these cases, we simply remove the rows because they would not be useful to our maps. By setting the columns as numeric, we end up with missing values in these cases - which we then filter out. 
+```{r clean_function, eval = FALSE}
+## Function to format the columns and remove rows with missing values. 
+clean_df <- function(df){
+  df <- df[-c(1,2), -c(3,4,5)]
+  colnames(df)[1] <- "Langs"
+  colnames(df)[2] <- "speakers"
+  df[,1] <- as.character(df[,1])
+  df[,2] <- as.numeric(gsub(",","", df[,2]))
+  df <- df %>%
+    filter(!is.na(speakers)) %>%
+    select(Langs,speakers)
+  df <- clean_rows(df)
+  df[1,1] <- "Population"
+  df[2,1] <- "Only English"
+  df
+}
+```
+
+  I make use of the make_full_df functions to make the raw datasets for the two sets of state data, mutate a year variable, and bind together for a complete dataset. This is the dataset saved in the 'data' folder, which we use for the rest of this Markdown file. 
+```{r full_dataset, eval = FALSE}
+states2013_raw <- make_full_df(states2013_sheets)
+states2008_raw <- make_full_df(states2008_sheets)
+
+states2013_raw <- states2013_raw %>%
+  mutate(year = "2013")
+
+states2008_raw <- states2008_raw %>%
+  mutate( year = "2008")
+
+data_raw <- rbind(states2013_raw,states2008_raw)
+write.csv(data_raw, file = "data/data_raw.csv")
+```  
+  
+  To use the dataset in a choropleth, we need to match the regions as specified by the chloropleth package. To do so, we set the class of the State column to character, make the strings lower case, and trim any white space. We use an anti_join to see whether any regions are unmatched - and see that "puerto rico" is the only unmatched region, which is not of concern.
+```{r state_regions, warning=FALSE, message=FALSE}
+data <- read_csv("data/data_raw.csv")
+
+data$State <- as.character(data$State)
+data$region <- str_to_lower(data$State) 
+data$region <- trimws(data$region)
+data(state.regions)
+
+## Checking which regions remain unmatched
+anti_join(data,state.regions)
+```
+
+  In order to get a different perspective of the values on the choropleth maps, I mutate an extra variable - percent. Percent indicates the percent of speakers within a state. This way the states can be compared by their percentage of speakers rather than just by number of speakers alone.  
+```{r percents, message = FALSE, warning = FALSE}
+populations <- data %>%
+  filter(Langs == "Population") %>%
+  select(speakers, year, region)
+colnames(populations)[1] <- "POP"
+
+data <- left_join(data,populations)
+
+data <- data %>%
+  group_by(region,Langs) %>%
+  mutate(percent = 100*(speakers/POP) ) %>%
+  filter(Langs != "Population") %>%
+  select(Langs, speakers, year, region, percent) %>%
+  gather(dataType, value, speakers, percent) %>%
+  ungroup()
+
+write.csv(data, file = "data/data.csv") ## Writing file for the Shiny app
+
+langoptions <- unique(data$Langs)  ## Options for the Shiny app language selection
+langoptions <- sort(langoptions) 
+```
+Among the langoptions, I noticed two odd observations are "India nec3" and "Pakistan nec3" - the ACS notes clarify that these were undeterminable languages. "Not Elsewhere Classified", these were instances where it could not be determined whether the respondent spoke a native american language or a language from India, or which Pakistani language was actually being spoken.  
+ 
+### Observations about the State data  
+  To take a look at the most and least common languages across the USA, 
+```{r uncommon_languages}
+ counts_lang <- data %>%
+   filter(dataType == "speakers", year == "2013")
+ 
+ counts_lang <- aggregate(value ~ Langs, data= counts_lang, FUN=sum)
+ counts_lang %>% arrange(desc(value)) %>% tail(10) ## Least common languages
+```  
+  
+  Above are the least common languages, which are all Native American languages. 
+  
+```{r common_languages}
+ counts_lang %>% arrange(desc(value)) %>% head(10) ## Most common languages  
+``` 
+  
+  Above are the most common languages, which are fairly varied by immigrant population. 
+  
+  We can also use this data to determine the linguistic-diversity (or linguistic fractionalization) of the states. Below I filter to the percentage of "Only English" speakers in each state. 
+```{r not_diverse_states}
+  counts_states <- data %>%
+   filter(dataType == "percent", year == "2013", Langs == "Only English") %>%
+  select(Langs, region, value)
+
+counts_states %>% arrange(desc(value)) %>% head(10) ## Least diverse 
+```
+Above are the 10 least linguistically-diverse states in the USA. 
+
+```{r diverse_states}
+counts_states %>% arrange(desc(value)) %>% tail(10) ## Most diverse
+```
+ Above are the 10 most linguistically diverse states in the USA, including Puerto Rico (which obviously will have the fewest 'Only English' speakers). 
+ 
+
+```{r state_diversity, echo = FALSE}
+counts_us <- data %>%
+  filter(dataType == "speakers")
+
+counts_us <- as.data.frame(table(counts_us$region))
+
+counts_us$region <- as.character(counts_us$Var1)
+counts_us$value <- as.numeric(counts_us$Freq)
+
+custom_choro <- StateChoropleth$new(counts_us)
+custom_choro$set_num_colors(1)
+custom_choro$ggplot_polygon <- geom_polygon(aes(fill = value), color = NA)
+custom_choro$ggplot_scale <- scale_fill_gradientn(name = "value", colors = plasma(10))
+custom_choro$title = "Number of Languages Spoken at Homes, other than English"
+ grid.arrange(
+    custom_choro$render(),
+    ncol = 1, nrow = 1
+  ) 
+```  
+  
+  The above chloropleth gives us a look at the range of linguistic diversity across the USA. California is definitely unrivaled in linguistic diversity. 
+
+### County Data 
+For the county survey data, I use the first sheet as an index to find the sheet numbers for a state. I set up a series of functions in order to pull in the data for a state, which is triggered by "choro_state_set". Choro_state_set prepares a data set of state-specific county data for a state choropleth by using the following functions:    
+  1) find_county_index - uses the counties index to find the sheet numbers for the counties of a state    
+  2) create_state_set - function to download the sheets from the excel file for the specified index of sheets    
+  3) make_full_df - function to make a dataframe of the list of sheets  
+  4) join_data_and_region - function to join the choropleth regions with the data  
+  5) tidy_population - function to mutate the percent variable  
+  Details for these functions can be found in the functions.r file. 
+```{r county_functions, eval = FALSE}
+counties_raw <- read.xls(url2, sheet = 1, skip = 3, header = TRUE)
+write.csv(counties_raw, "data/counties_raw.csv")
+## Function to prepare state-specific county data for a state choropleth
+choro_state_set <- function(statesel){
+  index <- find_county_index(counties_raw, statesel)
+  raw <- create_state_set(index)
+  data <- make_full_df(raw)
+  choro <- join_data_and_region(data)
+  choro <- tidy_population(choro)
+  choro
+}
+
+## Data files saved in data folder
+nj_choro <- choro_state_set("NJ")
+ca_choro <- choro_state_set("CA")
+
+write.csv(nj_choro, "data/nj_choro.csv")
+write.csv(ca_choro, "data/ca_choro.csv")
+```
+
+### County Choropleths
+As an example of how this data can be used, I've saved data for the NJ and CA counties. I have a function to plot county choropleths easily. Below are the choropleths for Spanish, Tagalog, and Chinese speakers - which were a few of the more common languages. The blacked-out counties on the choropleths were not counties included in the ACS survey. 
+```{r, echo = FALSE}
+counties_raw <- read.csv("data/counties_raw.csv")
+nj_choro <- read.csv("data/nj_choro.csv")
+ca_choro <- read.csv("data/ca_choro.csv")
+```  
+  
+  Taking a look at the prevalance in New Jesrey of some of the more common languages in the US 
+```{r county_choro, ECHO = FALSE, warning=FALSE}
+## Function to make chloropleth
+choro_state_zoom <- function(df, lang, datatype, state){
+  data <- df %>%
+    filter(Langs == lang) %>%
+    filter(dataType == datatype)
+  county_choropleth(data, state_zoom = c(state), title = paste0(lang," ",datatype," in", " ", state),num_colors = 7)
+}
+
+grid.arrange(
+   choro_state_zoom(nj_choro, "Spanish","speakers","new jersey"),
+   choro_state_zoom(nj_choro, "Tagalog", "speakers", "new jersey"),
+   choro_state_zoom(nj_choro, "Chinese", "speakers", "new jersey"),
+   choro_state_zoom(nj_choro, "Vietnamese","speakers","new jersey"),
+    ncol = 2, nrow = 2
+  )
+```  
+  
+  Checking the number of languages spoken in the counties of New Jersey and California. 
+```{r no_languages_CA_NJ, echo = FALSE, warning = FALSE}
+counts <- nj_choro %>%
+  filter(dataType == "speakers")
+
+counts <- as.data.frame(table(counts$region))
+counts$region <- as.numeric(as.character(counts$Var1))
+counts$value <- as.numeric(counts$Freq)
+
+custom_choro <- CountyChoropleth$new(counts)
+custom_choro$set_num_colors(1)
+custom_choro$ggplot_polygon <- geom_polygon(aes(fill = value), color = NA)
+custom_choro$ggplot_scale <- scale_fill_gradientn(name = "value", colors = plasma(10))
+custom_choro$set_zoom("new jersey")
+custom_choro$title = "Number of Languages Spoken at Homes"
+
+counts2 <- ca_choro %>%
+  filter(dataType == "speakers")
+counts2 <- as.data.frame(table(counts2$region))
+counts2$region <- as.numeric(as.character(counts2$Var1))
+counts2$value <- as.numeric(counts2$Freq)
+
+custom_choro2 <- CountyChoropleth$new(counts2)
+custom_choro2$set_num_colors(1)
+custom_choro2$ggplot_polygon <- geom_polygon(aes(fill = value), color = NA)
+custom_choro2$ggplot_scale <- scale_fill_gradientn(name = "value", colors = plasma(10))
+custom_choro2$set_zoom("california")
+custom_choro2$title = "Number of Languages Spoken at Homes"
+ grid.arrange(
+    custom_choro$render(),
+    custom_choro2$render(),
+    ncol = 2, nrow = 1
+  )
+```
+
+### Shiny App - State Level
+ My shiny app can be found at: https://soobi.shinyapps.io/dwproject/ 
+  
+  There are a few things I would have liked to improve on this Shiny app. One issue is that the tables are set to display 2 decimal places as a default. When 'percent' is selected as an option, there are many cases when this results in the value displaying as '0.00'. I would prefer to have the table digits as a reactive number - '0' when 'speakers' is selected, and '4' when 'percent' is selected. I should have also been more specific that "speakers" referred to the number of speakers within a state and that "percent" was the percent of speakers of the state. I plotted 2008 and 2013 side by side because it seemed the best option to visualize any potential changes. If I pulled more survey information from other years - I would have liked to make an animated chloropleth. As it was, the 2008/2013 information seemed somewhat incomplete - with missing values for 2013 for languages such as "Achumawi".  
+  I also wanted to compile a table of each language and the country where it was predominantly spoken - and then display this table under the plots for each language selection. For example, it would have been interesting to select "Bengali", see on the choropleths where it is spoken in the US, and then had a little informative table telling me that it was spoken in India, Bangladesh, etc.
